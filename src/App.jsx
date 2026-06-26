@@ -92,7 +92,7 @@ export default function App() {
     });
     if (error) {
       console.error("Create circle error:", error);
-      setErrorMsg("Couldn't create the circle. Please try again.");
+      setErrorMsg(`Couldn't create the circle. Details: ${error.message || JSON.stringify(error)}`);
       return;
     }
     setShowCreate(false);
