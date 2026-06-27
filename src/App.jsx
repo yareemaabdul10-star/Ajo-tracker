@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Plus, Check, Clock, ChevronRight, Users, Calendar, X, ArrowLeft } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
+// ---------- Helpers ----------
 function formatNaira(n) {
   return "₦" + Number(n).toLocaleString("en-NG");
 }
@@ -22,7 +23,93 @@ function formatDate(d) {
   });
 }
 
+// ---------- Auth screen ----------
+function AuthScreen({ onAuthed }) {
+  const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit() {
+    if (!email.trim() || !password) {
+      setError("Enter both email and password.");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    if (mode === "signup") {
+      const { error } = await supabase.auth.signUp({ email: email.trim(), password });
+      if (error) {
+        setError(error.message);
+        setLoading(false);
+        return;
+      }
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (error) {
+        setError(error.message);
+        setLoading(false);
+        return;
+      }
+    }
+    setLoading(false);
+    onAuthed();
+  }
+
+  return (
+    <div style={styles.page}>
+      <GlobalStyles />
+      <div style={{ ...styles.empty, marginTop: 60 }}>
+        <div style={styles.emptyStamp}>AJO</div>
+        <h1 style={{ ...styles.h1, marginBottom: 20 }}>
+          {mode === "login" ? "Welcome back" : "Create your account"}
+        </h1>
+        <div style={{ textAlign: "left", width: "100%" }}>
+          <Field label="Email">
+            <input
+              style={styles.input}
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoFocus
+            />
+          </Field>
+          <Field label="Password">
+            <input
+              style={styles.input}
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </Field>
+        </div>
+        {error && <div style={styles.errorText}>{error}</div>}
+        <button style={styles.primaryBtn} onClick={submit} disabled={loading}>
+          {loading ? "Please wait…" : mode === "login" ? "Log in" : "Sign up"}
+        </button>
+        <button
+          style={{ ...styles.deleteLink, color: "#cfcde0" }}
+          onClick={() => {
+            setMode(mode === "login" ? "signup" : "login");
+            setError("");
+          }}
+        >
+          {mode === "login" ? "New here? Create an account" : "Already have an account? Log in"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Main App ----------
 export default function App() {
+  const [session, setSession] = useState(undefined); // undefined = checking, null = logged out
   const [circles, setCircles] = useState([]);
   const [activeCircleId, setActiveCircleId] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -32,6 +119,26 @@ export default function App() {
 
   const activeCircle = circles.find((c) => c.id === activeCircleId);
 
+  // ---------- Auth session handling ----------
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    setCircles([]);
+    setActiveCircleId(null);
+  }
+
+  // ---------- Data loading ----------
   async function loadCircles() {
     setLoading(true);
     setErrorMsg("");
@@ -79,9 +186,12 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadCircles();
-  }, []);
+    if (session) {
+      loadCircles();
+    }
+  }, [session]);
 
+  // ---------- Mutations ----------
   async function createCircle(data) {
     const { error } = await supabase.from("circles").insert({
       name: data.name,
@@ -89,6 +199,7 @@ export default function App() {
       frequency: data.frequency,
       start_date: data.startDate,
       current_round: 0,
+      owner_id: session.user.id,
     });
     if (error) {
       console.error("Create circle error:", error);
@@ -172,6 +283,7 @@ export default function App() {
       return;
     }
 
+    // Reset everyone's paid status for the new round
     for (const m of circle.members) {
       await supabase.from("members").update({ paid_this_round: false }).eq("id", m.id);
     }
@@ -190,6 +302,20 @@ export default function App() {
     }
     setActiveCircleId(null);
     await loadCircles();
+  }
+
+  // ---------- Render ----------
+  if (session === undefined) {
+    return (
+      <div style={styles.page}>
+        <GlobalStyles />
+        <div style={styles.loadingWrap}>Checking your session…</div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen onAuthed={() => {}} />;
   }
 
   if (loading) {
@@ -227,10 +353,15 @@ export default function App() {
           <div style={styles.eyebrow}>YOUR CIRCLES</div>
           <h1 style={styles.h1}>Ajo Ledger</h1>
         </div>
-        <button style={styles.newBtn} onClick={() => setShowCreate(true)}>
-          <Plus size={18} strokeWidth={2.5} />
-          New circle
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.newBtn} onClick={() => setShowCreate(true)}>
+            <Plus size={18} strokeWidth={2.5} />
+            New circle
+          </button>
+          <button style={{ ...styles.secondaryBtn, flex: "none", width: "auto" }} onClick={handleLogout}>
+            Log out
+          </button>
+        </div>
       </header>
 
       {errorMsg && <div style={styles.saveWarning}>{errorMsg}</div>}
@@ -252,6 +383,7 @@ export default function App() {
   );
 }
 
+// ---------- Empty state ----------
 function EmptyState({ onCreate }) {
   return (
     <div style={styles.empty}>
@@ -268,6 +400,7 @@ function EmptyState({ onCreate }) {
   );
 }
 
+// ---------- Circle card on dashboard ----------
 function CircleCard({ circle, onOpen }) {
   const paidCount = circle.members.filter((m) => m.paid_this_round).length;
   const total = circle.members.length;
@@ -310,6 +443,7 @@ function CircleCard({ circle, onOpen }) {
   );
 }
 
+// ---------- Create circle modal ----------
 function CreateCircleModal({ onClose, onCreate }) {
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
@@ -382,6 +516,7 @@ function CreateCircleModal({ onClose, onCreate }) {
   );
 }
 
+// ---------- Add member modal ----------
 function AddMemberModal({ onClose, onSubmit }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -423,6 +558,7 @@ function AddMemberModal({ onClose, onSubmit }) {
   );
 }
 
+// ---------- Circle detail screen ----------
 function CircleDetail({
   circle,
   onBack,
@@ -603,6 +739,7 @@ function CircleDetail({
   );
 }
 
+// ---------- Member row ----------
 function MemberRow({ member, isRecipient, turnNumber, onTogglePaid, onRemove }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   return (
@@ -639,6 +776,7 @@ function MemberRow({ member, isRecipient, turnNumber, onTogglePaid, onRemove }) 
   );
 }
 
+// ---------- Shared bits ----------
 function Modal({ title, children, onClose }) {
   return (
     <div style={styles.overlay} onClick={onClose}>
@@ -681,85 +819,568 @@ function GlobalStyles() {
   );
 }
 
+// ---------- Styles ----------
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Inter', -apple-system, sans-serif";
 
 const styles = {
-  page: { minHeight: "100vh", background: "#1B1A2E", color: "#F0E6D6", fontFamily: FONT_BODY, padding: "28px 20px 60px", maxWidth: 640, margin: "0 auto" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 28, gap: 12, flexWrap: "wrap" },
-  eyebrow: { fontSize: 11, letterSpacing: "0.12em", color: "#D4A24C", fontWeight: 600, marginBottom: 6 },
-  h1: { fontFamily: FONT_DISPLAY, fontSize: 28, fontWeight: 600, margin: 0, color: "#F0E6D6", lineHeight: 1.1 },
-  h2: { fontFamily: FONT_DISPLAY, fontSize: 17, fontWeight: 600, margin: "28px 0 12px", color: "#F0E6D6" },
-  newBtn: { display: "flex", alignItems: "center", gap: 6, background: "#D4A24C", color: "#1B1A2E", border: "none", borderRadius: 10, padding: "11px 16px", fontWeight: 700, fontSize: 14, cursor: "pointer", whiteSpace: "nowrap" },
-  groupGrid: { display: "flex", flexDirection: "column", gap: 12 },
-  groupCard: { background: "#23223C", border: "1px solid #34334F", borderRadius: 14, padding: "18px 18px 16px", textAlign: "left", cursor: "pointer", color: "#F0E6D6", fontFamily: "inherit", transition: "transform 0.15s ease, border-color 0.15s ease", width: "100%" },
-  cardTopRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  cardName: { fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 600 },
-  cardAmount: { fontFamily: FONT_DISPLAY, fontSize: 22, color: "#D4A24C", marginTop: 4 },
-  cardMeta: { display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#9b9ab5", marginTop: 8 },
-  dot: { width: 3, height: 3, borderRadius: "50%", background: "#9b9ab5" },
-  cardFooter: { marginTop: 14, paddingTop: 12, borderTop: "1px dashed #34334F" },
-  cardFooterRow: { display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#cfcde0", marginBottom: 8 },
-  progressTrack: { height: 5, borderRadius: 3, background: "#34334F", overflow: "hidden" },
-  progressFill: { height: "100%", background: "#7A9B7E", borderRadius: 3, transition: "width 0.2s ease" },
-  progressLabel: { fontSize: 11.5, color: "#9b9ab5", marginTop: 6 },
-  empty: { textAlign: "center", padding: "48px 20px", border: "1px dashed #34334F", borderRadius: 16 },
-  emptyStamp: { display: "inline-block", fontFamily: FONT_DISPLAY, fontSize: 13, letterSpacing: "0.15em", color: "#1B1A2E", background: "#D4A24C", padding: "6px 14px", borderRadius: 4, transform: "rotate(-3deg)", marginBottom: 18, fontWeight: 700 },
-  emptyText: { color: "#b8b6cc", fontSize: 14.5, lineHeight: 1.6, maxWidth: 380, margin: "0 auto 24px" },
-  backBtn: { display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: "#9b9ab5", fontSize: 13.5, cursor: "pointer", padding: 0, marginBottom: 20, fontFamily: "inherit" },
-  detailHeaderRow: { marginBottom: 24 },
-  detailSub: { fontSize: 14, color: "#b8b6cc", marginTop: 6 },
-  payoutBanner: { background: "linear-gradient(135deg, #2C2A4A, #23223C)", border: "1px solid #D4A24C44", borderRadius: 16, padding: "20px 20px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 8 },
-  payoutLabel: { fontSize: 11.5, color: "#9b9ab5", textTransform: "uppercase", letterSpacing: "0.08em" },
-  payoutName: { fontFamily: FONT_DISPLAY, fontSize: 22, color: "#F0E6D6", margin: "4px 0 8px" },
-  payoutDate: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#cfcde0" },
-  payoutAmountWrap: { textAlign: "right" },
-  payoutAmount: { fontFamily: FONT_DISPLAY, fontSize: 20, color: "#D4A24C" },
-  payoutAmountLabel: { fontSize: 11, color: "#9b9ab5", marginTop: 2 },
-  sectionRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 28 },
-  smallAddBtn: { display: "flex", alignItems: "center", gap: 4, background: "none", border: "1px solid #34334F", color: "#D4A24C", borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
-  memberList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 12 },
-  memberRow: { display: "flex", alignItems: "center", gap: 12, background: "#23223C", border: "1px solid #34334F", borderRadius: 12, padding: "12px 14px" },
-  memberRowActive: { borderColor: "#D4A24C88", background: "#2A2748" },
-  turnBadge: { width: 26, height: 26, borderRadius: "50%", background: "#34334F", color: "#cfcde0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 },
-  memberInfo: { flex: 1, minWidth: 0 },
-  memberName: { fontSize: 14.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 },
-  recipientTag: { fontSize: 10, background: "#D4A24C", color: "#1B1A2E", padding: "2px 7px", borderRadius: 5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em" },
-  memberPhone: { fontSize: 12, color: "#9b9ab5", marginTop: 2 },
-  paidToggle: { display: "flex", alignItems: "center", gap: 5, border: "1px solid #34334F", background: "transparent", color: "#9b9ab5", borderRadius: 8, padding: "7px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", flexShrink: 0 },
-  paidToggleActive: { background: "#7A9B7E", color: "#16271a", border: "1px solid #7A9B7E" },
-  removeX: { background: "none", border: "none", color: "#6f6e88", cursor: "pointer", padding: 4, flexShrink: 0 },
-  removeConfirm: { display: "flex", gap: 4, flexShrink: 0 },
-  removeConfirmYes: { fontSize: 11, background: "#C9684D", color: "#fff", border: "none", borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontWeight: 600 },
-  removeConfirmNo: { fontSize: 11, background: "none", color: "#9b9ab5", border: "1px solid #34334F", borderRadius: 6, padding: "5px 8px", cursor: "pointer" },
-  roundFooter: { marginTop: 18, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start" },
-  historyList: { display: "flex", flexDirection: "column", gap: 6 },
-  historyRow: { display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "#23223C", border: "1px solid #2c2b47", borderRadius: 10 },
-  historyRoundBadge: { fontFamily: FONT_DISPLAY, fontSize: 12, color: "#D4A24C", border: "1px solid #D4A24C55", borderRadius: 6, padding: "3px 7px", flexShrink: 0 },
-  historyInfo: { flex: 1 },
-  historyName: { fontSize: 13.5, fontWeight: 600 },
-  historyDate: { fontSize: 11.5, color: "#9b9ab5", marginTop: 1 },
-  historyPaid: { fontSize: 11.5, color: "#9b9ab5", flexShrink: 0 },
-  deleteLink: { display: "block", margin: "40px auto 0", background: "none", border: "none", color: "#8b7565", fontSize: 12.5, cursor: "pointer", textDecoration: "underline" },
-  overlay: { position: "fixed", inset: 0, background: "rgba(10,9,20,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 },
-  modal: { background: "#23223C", border: "1px solid #34334F", borderRadius: 16, padding: 24, width: "100%", maxWidth: 380, maxHeight: "90vh", overflowY: "auto" },
-  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
-  modalTitle: { fontFamily: FONT_DISPLAY, fontSize: 18, margin: 0, color: "#F0E6D6" },
-  modalClose: { background: "none", border: "none", color: "#9b9ab5", cursor: "pointer", padding: 4 },
-  field: { marginBottom: 16 },
-  fieldLabel: { display: "block", fontSize: 12.5, color: "#9b9ab5", marginBottom: 6, fontWeight: 600 },
-  input: { width: "100%", background: "#1B1A2E", border: "1px solid #34334F", borderRadius: 9, padding: "11px 12px", color: "#F0E6D6", fontSize: 14.5, fontFamily: "inherit" },
-  amountWrap: { position: "relative" },
-  nairaPrefix: { position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "#9b9ab5", fontSize: 14.5 },
-  segmentRow: { display: "flex", gap: 6 },
-  segment: { flex: 1, background: "#1B1A2E", border: "1px solid #34334F", borderRadius: 8, padding: "9px 6px", color: "#9b9ab5", fontSize: 12.5, cursor: "pointer", fontWeight: 600 },
-  segmentActive: { background: "#D4A24C", color: "#1B1A2E", borderColor: "#D4A24C" },
-  errorText: { color: "#C9684D", fontSize: 12.5, marginBottom: 12 },
-  confirmText: { fontSize: 13.5, color: "#cfcde0", lineHeight: 1.6, marginBottom: 20 },
-  confirmRow: { display: "flex", gap: 10 },
-  primaryBtn: { background: "#D4A24C", color: "#1B1A2E", border: "none", borderRadius: 10, padding: "12px 18px", fontWeight: 700, fontSize: 14, cursor: "pointer", width: "100%" },
-  secondaryBtn: { background: "none", border: "1px solid #34334F", color: "#cfcde0", borderRadius: 10, padding: "12px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer", flex: 1 },
-  dangerBtn: { background: "#C9684D", border: "none", color: "#fff", borderRadius: 10, padding: "12px 18px", fontWeight: 700, fontSize: 14, cursor: "pointer", flex: 1 },
-  loadingWrap: { textAlign: "center", padding: "80px 20px", color: "#9b9ab5", fontSize: 14 },
-  saveWarning: { background: "#C9684D22", border: "1px solid #C9684D55", color: "#e3a896", fontSize: 12.5, borderRadius: 10, padding: "10px 14px", marginBottom: 18, lineHeight: 1.5 },
+  page: {
+    minHeight: "100vh",
+    background: "#1B1A2E",
+    color: "#F0E6D6",
+    fontFamily: FONT_BODY,
+    padding: "28px 20px 60px",
+    maxWidth: 640,
+    margin: "0 auto",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginBottom: 28,
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  eyebrow: {
+    fontSize: 11,
+    letterSpacing: "0.12em",
+    color: "#D4A24C",
+    fontWeight: 600,
+    marginBottom: 6,
+  },
+  h1: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 28,
+    fontWeight: 600,
+    margin: 0,
+    color: "#F0E6D6",
+    lineHeight: 1.1,
+  },
+  h2: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 17,
+    fontWeight: 600,
+    margin: "28px 0 12px",
+    color: "#F0E6D6",
+  },
+  newBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    background: "#D4A24C",
+    color: "#1B1A2E",
+    border: "none",
+    borderRadius: 10,
+    padding: "11px 16px",
+    fontWeight: 700,
+    fontSize: 14,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  groupGrid: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  groupCard: {
+    background: "#23223C",
+    border: "1px solid #34334F",
+    borderRadius: 14,
+    padding: "18px 18px 16px",
+    textAlign: "left",
+    cursor: "pointer",
+    color: "#F0E6D6",
+    fontFamily: "inherit",
+    transition: "transform 0.15s ease, border-color 0.15s ease",
+    width: "100%",
+  },
+  cardTopRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  cardName: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 18,
+    fontWeight: 600,
+  },
+  cardAmount: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 22,
+    color: "#D4A24C",
+    marginTop: 4,
+  },
+  cardMeta: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 12.5,
+    color: "#9b9ab5",
+    marginTop: 8,
+  },
+  dot: {
+    width: 3,
+    height: 3,
+    borderRadius: "50%",
+    background: "#9b9ab5",
+  },
+  cardFooter: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTop: "1px dashed #34334F",
+  },
+  cardFooterRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 12.5,
+    color: "#cfcde0",
+    marginBottom: 8,
+  },
+  progressTrack: {
+    height: 5,
+    borderRadius: 3,
+    background: "#34334F",
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    background: "#7A9B7E",
+    borderRadius: 3,
+    transition: "width 0.2s ease",
+  },
+  progressLabel: {
+    fontSize: 11.5,
+    color: "#9b9ab5",
+    marginTop: 6,
+  },
+  empty: {
+    textAlign: "center",
+    padding: "48px 20px",
+    border: "1px dashed #34334F",
+    borderRadius: 16,
+  },
+  emptyStamp: {
+    display: "inline-block",
+    fontFamily: FONT_DISPLAY,
+    fontSize: 13,
+    letterSpacing: "0.15em",
+    color: "#1B1A2E",
+    background: "#D4A24C",
+    padding: "6px 14px",
+    borderRadius: 4,
+    transform: "rotate(-3deg)",
+    marginBottom: 18,
+    fontWeight: 700,
+  },
+  emptyText: {
+    color: "#b8b6cc",
+    fontSize: 14.5,
+    lineHeight: 1.6,
+    maxWidth: 380,
+    margin: "0 auto 24px",
+  },
+  backBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    background: "none",
+    border: "none",
+    color: "#9b9ab5",
+    fontSize: 13.5,
+    cursor: "pointer",
+    padding: 0,
+    marginBottom: 20,
+    fontFamily: "inherit",
+  },
+  detailHeaderRow: {
+    marginBottom: 24,
+  },
+  detailSub: {
+    fontSize: 14,
+    color: "#b8b6cc",
+    marginTop: 6,
+  },
+  payoutBanner: {
+    background: "linear-gradient(135deg, #2C2A4A, #23223C)",
+    border: "1px solid #D4A24C44",
+    borderRadius: 16,
+    padding: "20px 20px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 16,
+    marginBottom: 8,
+  },
+  payoutLabel: {
+    fontSize: 11.5,
+    color: "#9b9ab5",
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+  },
+  payoutName: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 22,
+    color: "#F0E6D6",
+    margin: "4px 0 8px",
+  },
+  payoutDate: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 13,
+    color: "#cfcde0",
+  },
+  payoutAmountWrap: {
+    textAlign: "right",
+  },
+  payoutAmount: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 20,
+    color: "#D4A24C",
+  },
+  payoutAmountLabel: {
+    fontSize: 11,
+    color: "#9b9ab5",
+    marginTop: 2,
+  },
+  sectionRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 28,
+  },
+  smallAddBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    background: "none",
+    border: "1px solid #34334F",
+    color: "#D4A24C",
+    borderRadius: 8,
+    padding: "6px 10px",
+    fontSize: 12.5,
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  memberList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginTop: 12,
+  },
+  memberRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    background: "#23223C",
+    border: "1px solid #34334F",
+    borderRadius: 12,
+    padding: "12px 14px",
+  },
+  memberRowActive: {
+    borderColor: "#D4A24C88",
+    background: "#2A2748",
+  },
+  turnBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: "50%",
+    background: "#34334F",
+    color: "#cfcde0",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 12,
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  memberInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  memberName: {
+    fontSize: 14.5,
+    fontWeight: 600,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  recipientTag: {
+    fontSize: 10,
+    background: "#D4A24C",
+    color: "#1B1A2E",
+    padding: "2px 7px",
+    borderRadius: 5,
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.03em",
+  },
+  memberPhone: {
+    fontSize: 12,
+    color: "#9b9ab5",
+    marginTop: 2,
+  },
+  paidToggle: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    border: "1px solid #34334F",
+    background: "transparent",
+    color: "#9b9ab5",
+    borderRadius: 8,
+    padding: "7px 11px",
+    fontSize: 12.5,
+    fontWeight: 600,
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  paidToggleActive: {
+    background: "#7A9B7E",
+    color: "#16271a",
+    border: "1px solid #7A9B7E",
+  },
+  removeX: {
+    background: "none",
+    border: "none",
+    color: "#6f6e88",
+    cursor: "pointer",
+    padding: 4,
+    flexShrink: 0,
+  },
+  removeConfirm: {
+    display: "flex",
+    gap: 4,
+    flexShrink: 0,
+  },
+  removeConfirmYes: {
+    fontSize: 11,
+    background: "#C9684D",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    padding: "5px 8px",
+    cursor: "pointer",
+    fontWeight: 600,
+  },
+  removeConfirmNo: {
+    fontSize: 11,
+    background: "none",
+    color: "#9b9ab5",
+    border: "1px solid #34334F",
+    borderRadius: 6,
+    padding: "5px 8px",
+    cursor: "pointer",
+  },
+  roundFooter: {
+    marginTop: 18,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    alignItems: "flex-start",
+  },
+  historyList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  },
+  historyRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "10px 14px",
+    background: "#23223C",
+    border: "1px solid #2c2b47",
+    borderRadius: 10,
+  },
+  historyRoundBadge: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 12,
+    color: "#D4A24C",
+    border: "1px solid #D4A24C55",
+    borderRadius: 6,
+    padding: "3px 7px",
+    flexShrink: 0,
+  },
+  historyInfo: {
+    flex: 1,
+  },
+  historyName: {
+    fontSize: 13.5,
+    fontWeight: 600,
+  },
+  historyDate: {
+    fontSize: 11.5,
+    color: "#9b9ab5",
+    marginTop: 1,
+  },
+  historyPaid: {
+    fontSize: 11.5,
+    color: "#9b9ab5",
+    flexShrink: 0,
+  },
+  deleteLink: {
+    display: "block",
+    margin: "40px auto 0",
+    background: "none",
+    border: "none",
+    color: "#8b7565",
+    fontSize: 12.5,
+    cursor: "pointer",
+    textDecoration: "underline",
+  },
+  overlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(10,9,20,0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    zIndex: 50,
+  },
+  modal: {
+    background: "#23223C",
+    border: "1px solid #34334F",
+    borderRadius: 16,
+    padding: 24,
+    width: "100%",
+    maxWidth: 380,
+    maxHeight: "90vh",
+    overflowY: "auto",
+  },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+  modalTitle: {
+    fontFamily: FONT_DISPLAY,
+    fontSize: 18,
+    margin: 0,
+    color: "#F0E6D6",
+  },
+  modalClose: {
+    background: "none",
+    border: "none",
+    color: "#9b9ab5",
+    cursor: "pointer",
+    padding: 4,
+  },
+  field: {
+    marginBottom: 16,
+  },
+  fieldLabel: {
+    display: "block",
+    fontSize: 12.5,
+    color: "#9b9ab5",
+    marginBottom: 6,
+    fontWeight: 600,
+  },
+  input: {
+    width: "100%",
+    background: "#1B1A2E",
+    border: "1px solid #34334F",
+    borderRadius: 9,
+    padding: "11px 12px",
+    color: "#F0E6D6",
+    fontSize: 14.5,
+    fontFamily: "inherit",
+  },
+  amountWrap: {
+    position: "relative",
+  },
+  nairaPrefix: {
+    position: "absolute",
+    left: 12,
+    top: "50%",
+    transform: "translateY(-50%)",
+    color: "#9b9ab5",
+    fontSize: 14.5,
+  },
+  segmentRow: {
+    display: "flex",
+    gap: 6,
+  },
+  segment: {
+    flex: 1,
+    background: "#1B1A2E",
+    border: "1px solid #34334F",
+    borderRadius: 8,
+    padding: "9px 6px",
+    color: "#9b9ab5",
+    fontSize: 12.5,
+    cursor: "pointer",
+    fontWeight: 600,
+  },
+  segmentActive: {
+    background: "#D4A24C",
+    color: "#1B1A2E",
+    borderColor: "#D4A24C",
+  },
+  errorText: {
+    color: "#C9684D",
+    fontSize: 12.5,
+    marginBottom: 12,
+  },
+  confirmText: {
+    fontSize: 13.5,
+    color: "#cfcde0",
+    lineHeight: 1.6,
+    marginBottom: 20,
+  },
+  confirmRow: {
+    display: "flex",
+    gap: 10,
+  },
+  primaryBtn: {
+    background: "#D4A24C",
+    color: "#1B1A2E",
+    border: "none",
+    borderRadius: 10,
+    padding: "12px 18px",
+    fontWeight: 700,
+    fontSize: 14,
+    cursor: "pointer",
+    width: "100%",
+  },
+  secondaryBtn: {
+    background: "none",
+    border: "1px solid #34334F",
+    color: "#cfcde0",
+    borderRadius: 10,
+    padding: "12px 18px",
+    fontWeight: 600,
+    fontSize: 14,
+    cursor: "pointer",
+    flex: 1,
+  },
+  dangerBtn: {
+    background: "#C9684D",
+    border: "none",
+    color: "#fff",
+    borderRadius: 10,
+    padding: "12px 18px",
+    fontWeight: 700,
+    fontSize: 14,
+    cursor: "pointer",
+    flex: 1,
+  },
+  loadingWrap: {
+    textAlign: "center",
+    padding: "80px 20px",
+    color: "#9b9ab5",
+    fontSize: 14,
+  },
+  saveWarning: {
+    background: "#C9684D22",
+    border: "1px solid #C9684D55",
+    color: "#e3a896",
+    fontSize: 12.5,
+    borderRadius: 10,
+    padding: "10px 14px",
+    marginBottom: 18,
+    lineHeight: 1.5,
+  },
 };
